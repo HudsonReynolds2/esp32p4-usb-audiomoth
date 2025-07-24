@@ -65,118 +65,101 @@ idf.py -p PORT flash monitor
 
 See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
 
-## Example Output
+## Output from usb_host_lib example with AudioMoth:
 
 ```
-I (305) main_task: Started on CPU0
-I (315) main_task: Calling app_main()
-I (315) USB host lib: USB host library example
-I (315) gpio: GPIO[0]| InputEn: 1| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:2 
-I (325) USB host lib: Installing USB Host Library
-I (365) CLASS: Registering Client
-I (745) CLASS: Opening device at address 1
-I (745) CLASS: Getting device information
-I (745) CLASS: 	Full speed
-I (745) CLASS: 	bConfigurationValue 1
-I (745) CLASS: Getting device descriptor
 *** Device descriptor ***
 bLength 18
 bDescriptorType 1
 bcdUSB 2.00
-bDeviceClass 0xef
-bDeviceSubClass 0x2
-bDeviceProtocol 0x1
+bDeviceClass 0x0
+bDeviceSubClass 0x0
+bDeviceProtocol 0x0
 bMaxPacketSize0 64
-idVendor 0x303a
-idProduct 0x1001
-bcdDevice 1.00
+idVendor 0x16d0
+idProduct 0x6f3
+bcdDevice 0.40
 iManufacturer 1
 iProduct 2
 iSerialNumber 3
 bNumConfigurations 1
-I (775) CLASS: Getting config descriptor
+I (46178) CLASS: Getting config descriptor
 *** Configuration descriptor ***
 bLength 9
 bDescriptorType 2
-wTotalLength 98
+wTotalLength 141
 bNumInterfaces 3
 bConfigurationValue 1
 iConfiguration 0
-bmAttributes 0xc0
-bMaxPower 500mA
-	*** Interface descriptor ***
-	bLength 9
-	bDescriptorType 4
-	bInterfaceNumber 0
-	bAlternateSetting 0
-	bNumEndpoints 1
-	bInterfaceClass 0x0
-	iInterface 0
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x82	EP 2 IN
-		bmAttributes 0x3	INT
-		wMaxPacketSize 64
-		bInterval 1
-	*** Interface descriptor ***
-	bLength 9
-	bDescriptorType 4
-	bInterfaceNumber 1
-	bAlternateSetting 0
-	bNumEndpoints 2
-	bInterfaceClass 0x0
-	iInterface 0
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x1	EP 1 OUT
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x81	EP 1 IN
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-	*** Interface descriptor ***
-	bLength 9
-	bDescriptorType 4
-	bInterfaceNumber 2
-	bAlternateSetting 0
-	bNumEndpoints 2
-	bInterfaceClass 0x1
-	iInterface 0
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x2	EP 2 OUT
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x83	EP 3 IN
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-I (855) CLASS: Getting Manufacturer string descriptor
-Espressif
-I (855) CLASS: Getting Product string descriptor
-USB JTAG/serial debug unit
-I (865) CLASS: Getting Serial Number string descriptor
-7C:DF:A1:E0:10:50
-W (2855) USB host lib: To shutdown example, remove all USB devices and press button again.
-E (6135) USBH: Device 1 gone
-I (9545) CLASS: Deregistering Client
-I (9545) USB host lib: No more clients
-I (9545) USB host lib: All devices marked as free
-I (9545) USB host lib: No more clients and devices
-I (9645) USB host lib: End of the example
-I (9645) main_task: Returned from app_main()
+bmAttributes 0xe0
+bMaxPower 100mA
+        *** Interface descriptor ***
+        bLength 9
+        bDescriptorType 4
+        bInterfaceNumber 0
+        bAlternateSetting 0
+        bNumEndpoints 0
+        bInterfaceClass 0x1
+        bInterfaceSubClass 0x1
+        bInterfaceProtocol 0x0
+        iInterface 0
+        *** Interface descriptor ***
+        bLength 9
+        bDescriptorType 4
+        bInterfaceNumber 1
+        bAlternateSetting 0
+        bNumEndpoints 0
+        bInterfaceClass 0x1
+        bInterfaceSubClass 0x2
+        bInterfaceProtocol 0x0
+        iInterface 0
+        *** Interface descriptor ***
+        bLength 9
+        bDescriptorType 4
+        bInterfaceNumber 1
+        bAlternateSetting 1
+        bNumEndpoints 1
+        bInterfaceClass 0x1
+        bInterfaceSubClass 0x2
+        bInterfaceProtocol 0x0
+        iInterface 0
+                *** Endpoint descriptor ***
+                bLength 9
+                bDescriptorType 5
+                bEndpointAddress 0x82   EP 2 IN
+                bmAttributes 0xd        ISOC
+                wMaxPacketSize 96
+                bInterval 1
+        *** Interface descriptor ***
+        bLength 9
+        bDescriptorType 4
+        bInterfaceNumber 2
+        bAlternateSetting 0
+        bNumEndpoints 2
+        bInterfaceClass 0x3
+        bInterfaceSubClass 0x0
+        bInterfaceProtocol 0x0
+        iInterface 0
+                *** Endpoint descriptor ***
+                bLength 7
+                bDescriptorType 5
+                bEndpointAddress 0x1    EP 1 OUT
+                bmAttributes 0x3        INT
+                wMaxPacketSize 64
+                bInterval 10
+                *** Endpoint descriptor ***
+                bLength 7
+                bDescriptorType 5
+                bEndpointAddress 0x81   EP 1 IN
+                bmAttributes 0x3        INT
+                wMaxPacketSize 64
+                bInterval 10
+I (46308) CLASS: Getting Manufacturer string descriptor
+openacousticdevices.info
+I (46318) CLASS: Getting Product string descriptor
+48kHz AudioMoth USB Microphone
+I (46318) CLASS: Getting Serial Number string descriptor
+0048_24E1440163FAFE5C
 ```
 
 ## Troubleshooting

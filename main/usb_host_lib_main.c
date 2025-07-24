@@ -1,6 +1,9 @@
-// uac_probe.c
+// uac_probe.c  (triple-buffered ISO URBs)
+// Build-tested against ESP-IDF v5.4.x
+
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -17,10 +20,22 @@ static const char *TAG = "UAC_PROBE";
 
 static usb_host_client_handle_t g_client;
 static usb_device_handle_t      g_dev;
+static SemaphoreHandle_t        ctrl_sem;
 
-static SemaphoreHandle_t ctrl_sem;
+/* ---------- ISO config ---------- */
+#define ISO_MPS              96      // from your descriptor
+#define ISO_PKTS_PER_URB     16      // 16 ms per URB (tune)
+#define NUM_ISO_URBS         3       // triple buffering
 
-// ================== Daemon task (handles library events) ==================
+/* Keep the URB pointers so they don't get GC'd */
+static usb_transfer_t *s_iso_urbs[NUM_ISO_URBS] = {0};
+
+/* Stats (atomic not necessary here; single core handles callback) */
+static uint64_t g_pkt_cnt = 0;
+static uint64_t g_byte_cnt = 0;
+static int64_t  g_last_log_us = 0;
+
+/* ================== Daemon task ================== */
 static void daemon_task(void *arg)
 {
     while (1) {
@@ -29,22 +44,15 @@ static void daemon_task(void *arg)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "usb_host_lib_handle_events: %s", esp_err_to_name(err));
         }
-        if (flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
-            // No clients left
-        }
-        if (flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
-            // All devices freed, safe to uninstall if desired
-        }
     }
 }
 
-// ================== Control xfer completion ==================
+/* ================== Control xfer completion ================== */
 static void ctrl_cb(usb_transfer_t *xfer)
 {
     xSemaphoreGiveFromISR(ctrl_sem, NULL);
 }
 
-// SET_INTERFACE via control transfer
 static esp_err_t ctrl_set_interface(uint8_t intf, uint8_t alt)
 {
     usb_transfer_t *xfer;
@@ -60,13 +68,10 @@ static esp_err_t ctrl_set_interface(uint8_t intf, uint8_t alt)
     xfer->callback          = ctrl_cb;
     xfer->context           = NULL;
 
-    // Drain any leftover give
-    while (xSemaphoreTake(ctrl_sem, 0) == pdTRUE) { }
-
+    while (xSemaphoreTake(ctrl_sem, 0) == pdTRUE) { /* drain */ }
     ESP_RETURN_ON_ERROR(usb_host_transfer_submit_control(g_client, xfer),
                         TAG, "submit ctrl");
 
-    // Wait for completion, pumping events
     while (xSemaphoreTake(ctrl_sem, 10 / portTICK_PERIOD_MS) != pdTRUE) {
         usb_host_client_handle_events(g_client, 10 / portTICK_PERIOD_MS);
     }
@@ -76,48 +81,44 @@ static esp_err_t ctrl_set_interface(uint8_t intf, uint8_t alt)
         ESP_LOGE(TAG, "SET_INTERFACE failed, status=%d", xfer->status);
         ret = ESP_FAIL;
     }
-
     usb_host_transfer_free(xfer);
     return ret;
 }
 
-// ================== ISO IN callback ==================
+/* ================== ISO callback ================== */
 static void isoc_in_cb(usb_transfer_t *t)
 {
     const int mps = (int)(intptr_t)t->context;
     size_t off = 0;
 
-    static uint64_t pkt_cnt = 0;
-    static uint64_t byte_cnt = 0;
-    static int64_t  last_log_us = 0;
     const int64_t now_us = esp_timer_get_time();
-    int16_t first_sample_snapshot = 0;
+    static int16_t last_first_sample = 0;
 
     for (int i = 0; i < t->num_isoc_packets; i++) {
         const usb_isoc_packet_desc_t *d = &t->isoc_packet_desc[i];
         if (d->status == USB_TRANSFER_STATUS_COMPLETED && d->actual_num_bytes) {
             const int16_t *pcm = (const int16_t *)(t->data_buffer + off);
-            first_sample_snapshot = pcm[0];
-            pkt_cnt++;
-            byte_cnt += d->actual_num_bytes;
+            last_first_sample = pcm[0];
+            g_pkt_cnt++;
+            g_byte_cnt += d->actual_num_bytes;
         }
         off += mps;
     }
 
     // Log every 500 ms
-    if (now_us - last_log_us > 500000) {
-        float kbps = (byte_cnt * 8.0f) / ((now_us - last_log_us) / 1000.0f); // kb/s
+    if (now_us - g_last_log_us > 500000) {
+        float kbps = (g_byte_cnt * 8.0f) / ((now_us - g_last_log_us) / 1000.0f);
         ESP_LOGI(TAG, "pkts=%llu bytes=%llu ~%.1f kbps first_sample=%d",
-                 (unsigned long long)pkt_cnt,
-                 (unsigned long long)byte_cnt,
+                 (unsigned long long)g_pkt_cnt,
+                 (unsigned long long)g_byte_cnt,
                  kbps,
-                 first_sample_snapshot);
-        pkt_cnt = 0;
-        byte_cnt = 0;
-        last_log_us = now_us;
+                 last_first_sample);
+        g_pkt_cnt = 0;
+        g_byte_cnt = 0;
+        g_last_log_us = now_us;
     }
 
-    // Re-submit
+    // Re-submit THIS URB immediately
     esp_err_t err = usb_host_transfer_submit(t);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "ISO resubmit failed: %s", esp_err_to_name(err));
@@ -125,42 +126,52 @@ static void isoc_in_cb(usb_transfer_t *t)
     }
 }
 
+/* ================== Start ISO stream (multi-URB) ================== */
 static esp_err_t start_isoc_stream(uint8_t ep_addr, int mps)
 {
-    const int ISO_PKTS = 8; // 8 ms worth per URB
-    size_t buf_size = mps * ISO_PKTS;
+    size_t buf_size = mps * ISO_PKTS_PER_URB;
 
-    usb_transfer_t *xfer;
-    ESP_RETURN_ON_ERROR(usb_host_transfer_alloc(buf_size, ISO_PKTS, &xfer),
-                        TAG, "alloc iso");
+    for (int u = 0; u < NUM_ISO_URBS; u++) {
+        usb_transfer_t *xfer;
+        ESP_RETURN_ON_ERROR(usb_host_transfer_alloc(buf_size, ISO_PKTS_PER_URB, &xfer),
+                            TAG, "alloc iso");
+        s_iso_urbs[u] = xfer;
 
-    xfer->device_handle    = g_dev;
-    xfer->bEndpointAddress = ep_addr;
-    xfer->callback         = isoc_in_cb;
-    xfer->context          = (void*)(intptr_t)mps;
-    xfer->num_bytes        = buf_size;     // <-- critical: must equal sum of per-packet sizes
+        xfer->device_handle    = g_dev;
+        xfer->bEndpointAddress = ep_addr;
+        xfer->callback         = isoc_in_cb;
+        xfer->context          = (void*)(intptr_t)mps;
+        xfer->num_bytes        = buf_size;
 
-    for (int i = 0; i < ISO_PKTS; i++) {
-        xfer->isoc_packet_desc[i].num_bytes = mps;
+        for (int i = 0; i < ISO_PKTS_PER_URB; i++) {
+            xfer->isoc_packet_desc[i].num_bytes = mps;
+        }
     }
 
-    return usb_host_transfer_submit(xfer);
+    // Submit ALL of them so the controller always has work
+    for (int u = 0; u < NUM_ISO_URBS; u++) {
+        esp_err_t err = usb_host_transfer_submit(s_iso_urbs[u]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "submit iso urb %d failed: %s", u, esp_err_to_name(err));
+            return err;
+        }
+    }
+    return ESP_OK;
 }
 
-// ================== Client event callback ==================
+/* ================== Client event callback ================== */
 static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg)
 {
     switch (event_msg->event) {
     case USB_HOST_CLIENT_EVENT_NEW_DEV: {
         ESP_LOGI(TAG, "NEW_DEV addr=%d", event_msg->new_dev.address);
-
         ESP_ERROR_CHECK(usb_host_device_open(g_client, event_msg->new_dev.address, &g_dev));
 
-        // From your dump: IF=1 ALT=1, EP=0x82 (ISO IN), MPS=96
+        // IF=1 ALT=1, EP 0x82 (ISO IN), MPS=96
         ESP_ERROR_CHECK(usb_host_interface_claim(g_client, g_dev, 1, 1));
         ESP_ERROR_CHECK(ctrl_set_interface(1, 1));
 
-        esp_err_t err = start_isoc_stream(0x82, 96);
+        esp_err_t err = start_isoc_stream(0x82, ISO_MPS);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "start_isoc_stream failed: %s", esp_err_to_name(err));
         }
@@ -168,14 +179,14 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
     }
     case USB_HOST_CLIENT_EVENT_DEV_GONE:
         ESP_LOGW(TAG, "DEV_GONE");
-        // TODO: stop ISO, release IF, close device
+        // TODO: stop stream and free URBs if you want to support hot-unplug
         break;
     default:
         break;
     }
 }
 
-// ================== Client task ==================
+/* ================== Client task ================== */
 static void client_task(void *arg)
 {
     const usb_host_client_config_t cfg = {
@@ -193,6 +204,7 @@ static void client_task(void *arg)
     }
 }
 
+/* ================== app_main ================== */
 void app_main(void)
 {
     ctrl_sem = xSemaphoreCreateBinary();
@@ -202,9 +214,6 @@ void app_main(void)
         .intr_flags = 0,
     };
     ESP_ERROR_CHECK(usb_host_install(&host_cfg));
-
-    // Optional: reduce verbosity further at runtime
-    // esp_log_level_set(TAG, ESP_LOG_WARN);
 
     xTaskCreatePinnedToCore(daemon_task, "usb_daemon", 4096, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(client_task, "usb_client", 8192, NULL, 4, NULL, 1);
